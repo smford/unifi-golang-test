@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
@@ -157,20 +159,6 @@ func main() {
 		}
 	}
 
-	/*
-		  // Call the API based on the action specified
-			result := callAPI(apiRequests[0].URL, apiRequests[0].Method)
-			if !result {
-				fmt.Println("Failed to call API:", apiRequests[0].Name)
-				os.Exit(1)
-			} else {
-				if debug {
-					// If debug is enabled, print the success message
-					fmt.Println("Successfully called API:", apiRequests[0].Name)
-				}
-			}
-	*/
-
 	findApiIndex := -1
 	for i, req := range apiRequests {
 		if strings.ToLower(req.Name) == strings.ToLower(viper.GetString("action")) {
@@ -187,11 +175,62 @@ func main() {
 		fmt.Printf(viper.GetString("action")+" is at position: %d\n", findApiIndex)
 	}
 
+	returnValue, returnString := callAPI(apiRequests[0].URL, apiRequests[0].Method)
+
+	if !returnValue {
+		fmt.Println("Failed to call API:", apiRequests[0].Name)
+		os.Exit(1)
+	}
+
 	switch strings.ToLower(viper.GetString("action")) {
 	case "getdevices":
-		callAPI(apiRequests[0].URL, apiRequests[0].Method)
+		if debug {
+			fmt.Println("Printing results for GetDevices..." + returnString + "__")
+		}
+
+		var devices V1Devices
+		err := json.Unmarshal([]byte(returnString), &devices)
+		if err != nil {
+			fmt.Println("Error unmarshalling response:", err)
+			os.Exit(1)
+		}
+
+		// Count total devices across all hosts
+		totalDevices := 0
+		for _, host := range devices.Data {
+			totalDevices += len(host.Devices)
+		}
+		fmt.Println("Devices count:", totalDevices)
+
+		if debug {
+			fmt.Println("\n\n")
+			for _, host := range devices.Data {
+				//fmt.Printf("Host: %s (%s)\n", host.HostName, host.HostID)
+				fmt.Println(prettyPrint(host.Devices))
+			}
+			fmt.Println("")
+		}
+
+		// Create a new tab writer
+		writer := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(writer, "#\tMAC\tName\tModel\tIP\tStatus\tVersion\tFirmware\tMngd\tStartup Time")
+
+		deviceIndex := 1
+		for _, host := range devices.Data {
+			for _, device := range host.Devices {
+				//fmt.Printf("Device %d: MAC: %s, Name: %s\n", deviceIndex, device.Mac, device.Name)
+				fmt.Fprintf(writer, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%t\t%s\n", deviceIndex, device.Mac, device.Name, device.Model, device.IP, device.Status, device.Version, device.FirmwareStatus, device.IsManaged, device.StartupTime.Format(time.RFC3339))
+				deviceIndex++
+			}
+		}
+
+		// write out the table
+		writer.Flush()
+
 	case "getsites":
-		callAPI(apiRequests[1].URL, apiRequests[1].Method)
+		if debug {
+			fmt.Println("Printing results for GetSites... " + returnString + "__")
+		}
 	// add more cases as needed for other actions
 	default:
 		fmt.Println("Unknown action:", viper.GetString("action"))
@@ -223,12 +262,12 @@ func displayHelp() {
 // calls an API with the provided URL and method
 // returns true if the call was successful, false otherwise
 // prints out the result
-func callAPI(url string, method string) bool {
+func callAPI(url string, method string) (bool, string) {
 	client := &http.Client{}
 	req, err := http.NewRequest(method, url, nil)
 	if err != nil {
 		fmt.Println("Error creating request:", err)
-		return false
+		return false, ""
 	}
 	req.Header.Add("Accept", "application/json")
 	req.Header.Add("X-API-Key", unifiKey)
@@ -236,17 +275,17 @@ func callAPI(url string, method string) bool {
 	res, err := client.Do(req)
 	if err != nil {
 		fmt.Println("Error making request:", err)
-		return false
+		return false, ""
 	}
 	defer res.Body.Close()
 
 	body, err := io.ReadAll(res.Body)
 	if err != nil {
 		fmt.Println("Error reading response:", err)
-		return false
+		return false, ""
 	}
-	fmt.Println(string(body))
-	return res.StatusCode >= 200 && res.StatusCode < 300
+	//fmt.Println(string(body))
+	return res.StatusCode >= 200 && res.StatusCode < 300, string(body) // Return the body for further processing if needed
 }
 
 // checks if the provided action is valid
@@ -267,4 +306,9 @@ func checkInterval(interval string) bool {
 		}
 	}
 	return false
+}
+
+func prettyPrint(i interface{}) string {
+	s, _ := json.MarshalIndent(i, "", "\t")
+	return string(s)
 }
